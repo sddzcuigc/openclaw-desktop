@@ -1,0 +1,42 @@
+name: Build OfflineCodex Full v3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'offline-codex-builder-v3/**'
+      - '.github/workflows/build-offline-codex-full-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct verified builder
+        shell: powershell
+        run: |
+          $parts = Get-ChildItem 'offline-codex-builder-v3/parts/part-*.txt' | Sort-Object Name
+          if ($parts.Count -ne 6) { throw "Expected 6 builder parts, got $($parts.Count)" }
+          $b64 = [string]::Concat(($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }))
+          $bytes = [Convert]::FromBase64String($b64)
+          [IO.File]::WriteAllBytes('offline-codex-builder-v3/build.ps1', $bytes)
+          Write-Host "Builder bytes: $($bytes.Length)"
+
+      - name: Build and self-test portable package
+        shell: powershell
+        run: ./offline-codex-builder-v3/build.ps1
+
+      - name: Upload complete offline package
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-Full-v1.0.0-win-x64
+          path: out/OfflineCodex-Full-v1.0.0-win-x64
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
