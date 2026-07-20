@@ -23,18 +23,10 @@ $sqliteAnchor = '$S=Join-Path $R ''runtime/python/Scripts/mcp-server-sqlite.exe'
 if ($StartText -notmatch 'mcp-server-sqlite\.exe') {
     if (!$StartText.Contains($pythonAnchor)) { throw 'Unable to locate Python launcher anchor.' }
     $StartText = $StartText.Replace($pythonAnchor, $pythonAnchor + ';' + $sqliteAnchor)
-    $oldSqlite = @'
-[mcp_servers.sqlite]
-command = "$(Q $P)"
-args = ["-m","mcp_server_sqlite","--db-path","$(Q $db)"]
-'@
-    $newSqlite = @'
-[mcp_servers.sqlite]
-command = "$(Q $S)"
-args = ["--db-path","$(Q $db)"]
-'@
-    if (!$StartText.Contains($oldSqlite)) { throw 'Unable to locate SQLite MCP config block.' }
-    $StartText = $StartText.Replace($oldSqlite,$newSqlite)
+    $sqlitePattern = '(?ms)\[mcp_servers\.sqlite\]\r?\ncommand = "\$\(Q \$P\)"\r?\nargs = \["-m","mcp_server_sqlite","--db-path","\$\(Q \$db\)"\]'
+    $sqliteReplacement = '[mcp_servers.sqlite]' + [Environment]::NewLine + 'command = "$(Q $S)"' + [Environment]::NewLine + 'args = ["--db-path","$(Q $db)"]'
+    if ($StartText -notmatch $sqlitePattern) { throw 'Unable to locate SQLite MCP config block.' }
+    $StartText = [regex]::Replace($StartText,$sqlitePattern,$sqliteReplacement)
 }
 Set-Content $StartScript $StartText -Encoding UTF8
 $Patched = Get-Content $StartScript -Raw
