@@ -10,7 +10,18 @@ $Model = 'qwen2.5-coder:7b'
 $LogDir = Join-Path $Dist 'data/logs'
 New-Item $LogDir -ItemType Directory -Force | Out-Null
 
-& (Join-Path $Dist 'Start-OfflineCodex.ps1') -ConfigureOnly
+# Patch the generated portable launcher itself, not only the QA command.
+$StartScript = Join-Path $Dist 'Start-OfflineCodex.ps1'
+$StartText = Get-Content $StartScript -Raw
+if ($StartText -notmatch '--local-provider\s+ollama') {
+    $StartText = $StartText.Replace('--oss -m $Model @args','--oss --local-provider ollama -m $Model @args')
+    Set-Content $StartScript $StartText -Encoding UTF8
+}
+if ((Get-Content $StartScript -Raw) -notmatch '--local-provider\s+ollama') {
+    throw 'Unable to patch portable launcher with the bundled Ollama provider.'
+}
+
+& $StartScript -ConfigureOnly
 $env:OLLAMA_MODELS = Join-Path $Dist 'models/ollama'
 $env:OLLAMA_HOST = '127.0.0.1:11434'
 Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -29,7 +40,7 @@ try {
     $last = Join-Path $LogDir 'codex-e2e-last.txt'
     Push-Location $Workspace
     try {
-        & $Codex exec --oss -m $Model --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox -o $last 'Reply with exactly CODEX_OK and nothing else.' 2>&1 | Tee-Object (Join-Path $LogDir 'codex-e2e-console.txt')
+        & $Codex exec --oss --local-provider ollama -m $Model --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox -o $last 'Reply with exactly CODEX_OK and nothing else.' 2>&1 | Tee-Object (Join-Path $LogDir 'codex-e2e-console.txt')
         if ($LASTEXITCODE) { throw "Codex exec failed: $LASTEXITCODE" }
     } finally { Pop-Location }
     $reply = Get-Content $last -Raw
@@ -89,10 +100,11 @@ CODEX RESPONSE: $reply
 ALL SIX MCP INITIALIZE AND TOOLS/LIST: PASS
 FILESYSTEM MCP REAL TOOLS/CALL WRITE: PASS
 PLAYWRIGHT MCP AND BUNDLED CHROMIUM DISCOVERY: PASS
+PORTABLE LAUNCHER LOCAL PROVIDER: ollama
 MODEL: $Model
 "@
     Set-Content (Join-Path $Dist 'FINAL-E2E-QA.txt') $report -Encoding UTF8
-    Add-Content (Join-Path $Dist 'QA-REPORT.txt') "Real Codex CLI to bundled model: PASS`r`nAll six MCP protocol initialization/list: PASS`r`nFilesystem MCP real tool call: PASS"
+    Add-Content (Join-Path $Dist 'QA-REPORT.txt') "Real Codex CLI to bundled model: PASS`r`nAll six MCP protocol initialization/list: PASS`r`nFilesystem MCP real tool call: PASS`r`nPortable launcher provider: ollama"
     Write-Host '[PASS] Real Codex and all MCP end-to-end QA.'
 } finally {
     Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
