@@ -137,8 +137,13 @@ Total size GiB: $([math]::Round($allBytes/1GB,2))
 "@ | Set-Content (Join-Path $Dist 'QA-REPORT.txt') -Encoding UTF8
 
 $hashes = Get-ChildItem $Dist -File -Recurse | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object FullName | ForEach-Object {
-    $h = Get-FileHash $_.FullName -Algorithm SHA256
-    "$($h.Hash.ToLower())  $([IO.Path]::GetRelativePath($Dist,$_.FullName).Replace('\','/'))"
+    $stream = [IO.File]::Open($_.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha.ComputeHash($stream) } finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
+    $hex = [Convert]::ToHexString($digest).ToLowerInvariant()
+    "$hex  $([IO.Path]::GetRelativePath($Dist,$_.FullName).Replace('\','/'))"
 }
 Set-Content (Join-Path $Dist 'SHA256SUMS.txt') $hashes -Encoding ASCII
 Write-Host "[PASS] Embedded model and final QA: $([math]::Round($allBytes/1GB,2)) GiB"
