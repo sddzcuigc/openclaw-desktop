@@ -6,22 +6,47 @@ $Workspace = Join-Path $Dist 'workspace'
 $Ollama = Join-Path $Dist 'runtime/ollama/ollama.exe'
 $Codex = Join-Path $Dist 'runtime/codex/codex.exe'
 $Node = Join-Path $Dist 'runtime/node/node.exe'
+$SqliteExe = Join-Path $Dist 'runtime/python/Scripts/mcp-server-sqlite.exe'
 $Model = 'qwen2.5-coder:7b'
 $LogDir = Join-Path $Dist 'data/logs'
 New-Item $LogDir -ItemType Directory -Force | Out-Null
+if (!(Test-Path $SqliteExe)) { throw "SQLite MCP console entrypoint missing: $SqliteExe" }
 
-# Patch the generated portable launcher itself, not only the QA command.
+# Patch the generated portable launcher itself, not only the QA commands.
 $StartScript = Join-Path $Dist 'Start-OfflineCodex.ps1'
 $StartText = Get-Content $StartScript -Raw
 if ($StartText -notmatch '--local-provider\s+ollama') {
     $StartText = $StartText.Replace('--oss -m $Model @args','--oss --local-provider ollama -m $Model @args')
-    Set-Content $StartScript $StartText -Encoding UTF8
 }
-if ((Get-Content $StartScript -Raw) -notmatch '--local-provider\s+ollama') {
-    throw 'Unable to patch portable launcher with the bundled Ollama provider.'
+$pythonAnchor = '$P=Join-Path $R ''runtime/python/python.exe'''
+$sqliteAnchor = '$S=Join-Path $R ''runtime/python/Scripts/mcp-server-sqlite.exe'''
+if ($StartText -notmatch 'mcp-server-sqlite\.exe') {
+    if (!$StartText.Contains($pythonAnchor)) { throw 'Unable to locate Python launcher anchor.' }
+    $StartText = $StartText.Replace($pythonAnchor, $pythonAnchor + ';' + $sqliteAnchor)
+    $oldSqlite = @'
+[mcp_servers.sqlite]
+command = "$(Q $P)"
+args = ["-m","mcp_server_sqlite","--db-path","$(Q $db)"]
+'@
+    $newSqlite = @'
+[mcp_servers.sqlite]
+command = "$(Q $S)"
+args = ["--db-path","$(Q $db)"]
+'@
+    if (!$StartText.Contains($oldSqlite)) { throw 'Unable to locate SQLite MCP config block.' }
+    $StartText = $StartText.Replace($oldSqlite,$newSqlite)
 }
+Set-Content $StartScript $StartText -Encoding UTF8
+$Patched = Get-Content $StartScript -Raw
+if ($Patched -notmatch '--local-provider\s+ollama') { throw 'Portable launcher lacks Ollama provider.' }
+if ($Patched -notmatch 'mcp-server-sqlite\.exe') { throw 'Portable launcher lacks SQLite MCP console entrypoint.' }
 
 & $StartScript -ConfigureOnly
+$GeneratedConfig = Join-Path $Dist 'data/codex/config.toml'
+if ((Get-Content $GeneratedConfig -Raw) -notmatch 'mcp-server-sqlite\.exe') {
+    throw 'Generated Codex config did not use the SQLite MCP console entrypoint.'
+}
+
 $env:OLLAMA_MODELS = Join-Path $Dist 'models/ollama'
 $env:OLLAMA_HOST = '127.0.0.1:11434'
 Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -58,13 +83,14 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const root = process.env.QA_ROOT;
 const node = path.join(root, 'runtime', 'node', 'node.exe');
 const py = path.join(root, 'runtime', 'python', 'python.exe');
+const sqlite = path.join(root, 'runtime', 'python', 'Scripts', 'mcp-server-sqlite.exe');
 const ws = path.join(root, 'workspace');
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([,v]) => typeof v === 'string'));
 const cases = [
   {name:'playwright', command:node, args:[path.join(root,'mcp','node','node_modules','@playwright','mcp','cli.js'),'--headless','--isolated','--browser','chromium','--output-dir',path.join(root,'data','playwright')], env:{PLAYWRIGHT_BROWSERS_PATH:path.join(root,'runtime','browser')}},
   {name:'filesystem', command:node, args:[path.join(root,'mcp','node','node_modules','@modelcontextprotocol','server-filesystem','dist','index.js'),ws]},
   {name:'git', command:py, args:['-m','mcp_server_git','--repository',ws]},
-  {name:'sqlite', command:py, args:['-m','mcp_server_sqlite','--db-path',path.join(ws,'offlinecodex.sqlite')]},
+  {name:'sqlite', command:sqlite, args:['--db-path',path.join(ws,'offlinecodex.sqlite')]},
   {name:'memory', command:node, args:[path.join(root,'mcp','node','node_modules','@modelcontextprotocol','server-memory','dist','index.js')], env:{MEMORY_FILE_PATH:path.join(root,'data','memory-qa.jsonl')}},
   {name:'sequential-thinking', command:node, args:[path.join(root,'mcp','node','node_modules','@modelcontextprotocol','server-sequential-thinking','dist','index.js')]}
 ];
@@ -100,11 +126,12 @@ CODEX RESPONSE: $reply
 ALL SIX MCP INITIALIZE AND TOOLS/LIST: PASS
 FILESYSTEM MCP REAL TOOLS/CALL WRITE: PASS
 PLAYWRIGHT MCP AND BUNDLED CHROMIUM DISCOVERY: PASS
+SQLITE MCP CONSOLE ENTRYPOINT: PASS
 PORTABLE LAUNCHER LOCAL PROVIDER: ollama
 MODEL: $Model
 "@
     Set-Content (Join-Path $Dist 'FINAL-E2E-QA.txt') $report -Encoding UTF8
-    Add-Content (Join-Path $Dist 'QA-REPORT.txt') "Real Codex CLI to bundled model: PASS`r`nAll six MCP protocol initialization/list: PASS`r`nFilesystem MCP real tool call: PASS`r`nPortable launcher provider: ollama"
+    Add-Content (Join-Path $Dist 'QA-REPORT.txt') "Real Codex CLI to bundled model: PASS`r`nAll six MCP protocol initialization/list: PASS`r`nFilesystem MCP real tool call: PASS`r`nSQLite MCP console entrypoint: PASS`r`nPortable launcher provider: ollama"
     Write-Host '[PASS] Real Codex and all MCP end-to-end QA.'
 } finally {
     Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
