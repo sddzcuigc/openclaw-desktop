@@ -65,101 +65,69 @@ jobs:
           chcp 65001>nul
           powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ASSEMBLE-OfflineCodex.ps1"
           pause'|Set-Content "$s/ASSEMBLE-OfflineCodex.cmd" -Encoding ASCII
+          1..8|%{$n="part{0:d2}"-f $_;$d=Join-Path 'uploads' $n;New-Item $d -ItemType Directory -Force|Out-Null;Copy-Item "$s/OfflineCodex-Full-v1.0.0-win-x64.zip.part$($_.ToString('000'))" $d;Copy-Item "$s/ASSEMBLE-OfflineCodex.ps1","$s/ASSEMBLE-OfflineCodex.cmd","$s/SPLIT-MANIFEST.json" $d}
 
-      - &part
-        name: Upload part 01
+      - name: Upload part 01
         uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part01
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part001
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part01
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 02
+      - name: Upload part 02
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part02
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part002
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part02
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 03
+      - name: Upload part 03
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part03
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part003
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part03
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 04
+      - name: Upload part 04
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part04
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part004
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part04
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 05
+      - name: Upload part 05
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part05
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part005
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part05
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 06
+      - name: Upload part 06
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part06
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part006
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part06
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 07
+      - name: Upload part 07
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part07
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part007
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part07
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
-      - <<: *part
-        name: Upload part 08
+      - name: Upload part 08
+        uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-Full-part08
-          path: |
-            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part008
-            split/ASSEMBLE-OfflineCodex.ps1
-            split/ASSEMBLE-OfflineCodex.cmd
-            split/SPLIT-MANIFEST.json
+          path: uploads/part08
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
