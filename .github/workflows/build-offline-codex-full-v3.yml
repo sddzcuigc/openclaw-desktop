@@ -21,7 +21,7 @@ jobs:
           show-progress: false
 
       - name: Reconstruct verified builder
-        shell: powershell
+        shell: pwsh
         run: |
           $parts = Get-ChildItem 'offline-codex-builder-v3/parts/part-*.txt' | Sort-Object Name
           if ($parts.Count -ne 6) { throw "Expected 6 builder parts, got $($parts.Count)" }
@@ -31,7 +31,7 @@ jobs:
           Write-Host "Builder bytes: $($bytes.Length)"
 
       - name: Build and self-test portable package
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           try {
