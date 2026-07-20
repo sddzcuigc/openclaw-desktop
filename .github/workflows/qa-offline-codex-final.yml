@@ -1,0 +1,133 @@
+name: QA OfflineCodex Final
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/qa-offline-codex-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qa:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all verified parts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: OfflineCodex-Full-part*
+          path: downloads
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: 29749341546
+
+      - name: Assemble package
+        shell: pwsh
+        run: |
+          & ./downloads/ASSEMBLE-OfflineCodex.ps1
+          if ($LASTEXITCODE) { throw 'Assembly failed' }
+
+      - name: Run packaged self-test
+        shell: pwsh
+        run: |
+          $dist = (Resolve-Path './downloads/out/OfflineCodex-Full-v1.0.0-win-x64').Path
+          & (Join-Path $dist 'SelfTest.ps1')
+          if ($LASTEXITCODE) { throw 'Packaged SelfTest failed' }
+
+      - name: Real Codex and MCP end-to-end QA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $dist=(Resolve-Path './downloads/out/OfflineCodex-Full-v1.0.0-win-x64').Path
+          $workspace=Join-Path $dist 'workspace'
+          $ollama=Join-Path $dist 'runtime/ollama/ollama.exe'
+          $codex=Join-Path $dist 'runtime/codex/codex.exe'
+          $node=Join-Path $dist 'runtime/node/node.exe'
+          $env:OLLAMA_MODELS=Join-Path $dist 'models/ollama'
+          $env:OLLAMA_HOST='127.0.0.1:11434'
+          Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $server=Start-Process $ollama -ArgumentList 'serve' -PassThru -WindowStyle Hidden
+          try {
+            $ready=$false
+            foreach($i in 1..90){
+              try { Invoke-RestMethod 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2 | Out-Null; $ready=$true; break }
+              catch { Start-Sleep 1 }
+            }
+            if(!$ready){throw 'Bundled Ollama did not start'}
+            & (Join-Path $dist 'Start-OfflineCodex.ps1') -ConfigureOnly
+            $last=Join-Path $dist 'data/logs/codex-e2e-last.txt'
+            Push-Location $workspace
+            try {
+              & $codex exec --oss -m 'qwen2.5-coder:7b' --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox -o $last 'Reply with exactly CODEX_OK and nothing else.'
+              if($LASTEXITCODE){throw "Codex exec failed: $LASTEXITCODE"}
+            } finally { Pop-Location }
+            $reply=Get-Content $last -Raw
+            if($reply -notmatch 'CODEX_OK'){throw "Unexpected Codex reply: $reply"}
+
+            $qa=Join-Path $dist 'mcp/node/qa-all-mcp.mjs'
+            @'
+import path from 'node:path';
+import fs from 'node:fs';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+const root=process.env.QA_ROOT;
+const node=path.join(root,'runtime','node','node.exe');
+const py=path.join(root,'runtime','python','python.exe');
+const ws=path.join(root,'workspace');
+const cases=[
+ {name:'playwright',command:node,args:[path.join(root,'mcp','node','node_modules','@playwright','mcp','cli.js'),'--headless','--isolated','--browser','chromium','--output-dir',path.join(root,'data','playwright')],env:{PLAYWRIGHT_BROWSERS_PATH:path.join(root,'runtime','browser')}},
+ {name:'filesystem',command:node,args:[path.join(root,'mcp','node','node_modules','@modelcontextprotocol','server-filesystem','dist','index.js'),ws]},
+ {name:'git',command:py,args:['-m','mcp_server_git','--repository',ws]},
+ {name:'sqlite',command:py,args:['-m','mcp_server_sqlite','--db-path',path.join(ws,'offlinecodex.sqlite')]},
+ {name:'memory',command:node,args:[path.join(root,'mcp','node','node_modules','@modelcontextprotocol','server-memory','dist','index.js')],env:{MEMORY_FILE_PATH:path.join(root,'data','memory-qa.jsonl')}},
+ {name:'sequential-thinking',command:node,args:[path.join(root,'mcp','node','node_modules','@modelcontextprotocol','server-sequential-thinking','dist','index.js')]}
+];
+const report=[];
+for(const s of cases){
+ const client=new Client({name:'offlinecodex-qa',version:'1.0.0'});
+ const transport=new StdioClientTransport({command:s.command,args:s.args,env:{...process.env,...(s.env||{})}});
+ await client.connect(transport);
+ const listed=await client.listTools();
+ if(!listed.tools?.length) throw new Error(`${s.name}: no tools`);
+ report.push(`${s.name}: ${listed.tools.length} tools [${listed.tools.map(t=>t.name).slice(0,8).join(', ')}]`);
+ if(s.name==='filesystem'){
+   const target=path.join(ws,'mcp-protocol-qa.txt');
+   await client.callTool({name:'write_file',arguments:{path:target,content:'MCP_OK'}});
+   if(fs.readFileSync(target,'utf8')!=='MCP_OK') throw new Error('filesystem tool call failed');
+ }
+ await client.close();
+}
+fs.writeFileSync(path.join(root,'data','logs','mcp-e2e-report.txt'),report.join('\n')+'\n');
+console.log(report.join('\n'));
+'@ | Set-Content $qa -Encoding UTF8
+            $env:QA_ROOT=$dist
+            & $node $qa
+            if($LASTEXITCODE){throw 'MCP protocol QA failed'}
+            if((Get-Content (Join-Path $workspace 'mcp-protocol-qa.txt') -Raw) -ne 'MCP_OK'){throw 'MCP write evidence missing'}
+            @"
+REAL CODEX EXEC: PASS
+CODEX RESPONSE: $reply
+ALL SIX MCP INITIALIZE/LIST: PASS
+FILESYSTEM MCP REAL TOOL CALL: PASS
+BUNDLED MODEL: qwen2.5-coder:7b
+"@ | Set-Content (Join-Path $dist 'FINAL-E2E-QA.txt') -Encoding UTF8
+          } finally {
+            Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload final QA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-Final-E2E-QA
+          path: |
+            downloads/out/OfflineCodex-Full-v1.0.0-win-x64/FINAL-E2E-QA.txt
+            downloads/out/OfflineCodex-Full-v1.0.0-win-x64/data/logs/codex-e2e-last.txt
+            downloads/out/OfflineCodex-Full-v1.0.0-win-x64/data/logs/mcp-e2e-report.txt
+            downloads/out/OfflineCodex-Full-v1.0.0-win-x64/workspace/mcp-protocol-qa.txt
+          retention-days: 3
