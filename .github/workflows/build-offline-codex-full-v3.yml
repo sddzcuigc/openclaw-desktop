@@ -73,7 +73,7 @@ jobs:
           npm install --no-save --no-audit --no-fund @actions/artifact@6.2.1
           @'
           import {DefaultArtifactClient} from '@actions/artifact';import fs from 'node:fs';import path from 'node:path';
-          const c=new DefaultArtifactClient(),r=path.resolve('split'),common=['ASSEMBLE-OfflineCodex.ps1','ASSEMBLE-OfflineCodex.cmd','SPLIT-MANIFEST.json'].map(x=>path.join(r,x));const parts=fs.readdirSync(r).filter(x=>x.includes('.part')).sort();if(parts.length>10)throw new Error(`Too many parts: ${parts.length}`);for(let i=0;i<parts.length;i++){const n=`OfflineCodex-Full-part${String(i+1).padStart(2,'0')}`;const z=await c.uploadArtifact(n,[path.join(r,parts[i]),...common],{compressionLevel:0,retentionDays:3});console.log(n,z)}
+          const c=new DefaultArtifactClient(),r=path.resolve('split'),common=['ASSEMBLE-OfflineCodex.ps1','ASSEMBLE-OfflineCodex.cmd','SPLIT-MANIFEST.json'].map(x=>path.join(r,x));const parts=fs.readdirSync(r).filter(x=>x.includes('.part')).sort();if(parts.length>10)throw new Error(`Too many parts: ${parts.length}`);for(let i=0;i<parts.length;i++){const n=`OfflineCodex-Full-part${String(i+1).padStart(2,'0')}`;const z=await c.uploadArtifact(n,[path.join(r,parts[i]),...common],r,{compressionLevel:0,retentionDays:3});console.log(n,z)}
           '@|Set-Content upload-parts.mjs -Encoding UTF8
           try{node upload-parts.mjs *>&1|Tee-Object upload.log}catch{$_|Out-String|Tee-Object upload.log -Append;throw}
 
