@@ -54,6 +54,7 @@ jobs:
           if($LASTEXITCODE){throw "7-Zip failed: $LASTEXITCODE"}
           $i=1;Get-ChildItem "$base.*"|Sort-Object Name|%{Rename-Item $_.FullName ("OfflineCodex-Full-v1.0.0-win-x64.zip.part{0:d3}"-f $i);$i++}
           $info=Get-ChildItem "$s/*.part*"|Sort-Object Name|%{[ordered]@{name=$_.Name;size=$_.Length;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()}}
+          if($info.Count-ne 8){throw "Expected 8 split files, got $($info.Count)"}
           [ordered]@{archive='OfflineCodex-Full-v1.0.0-win-x64.zip';parts=@($info)}|ConvertTo-Json -Depth 5|Set-Content "$s/SPLIT-MANIFEST.json" -Encoding UTF8
           @'
           $ErrorActionPreference='Stop';$R=$PSScriptRoot;$m=Get-Content "$R/SPLIT-MANIFEST.json" -Raw|ConvertFrom-Json;$a=Join-Path $R $m.archive;$o=[IO.File]::Create($a)
@@ -64,26 +65,101 @@ jobs:
           chcp 65001>nul
           powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ASSEMBLE-OfflineCodex.ps1"
           pause'|Set-Content "$s/ASSEMBLE-OfflineCodex.cmd" -Encoding ASCII
-          Write-Host "Parts: $($info.Count)"
 
-      - name: Upload split parts
-        shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          npm install --no-save --no-audit --no-fund @actions/artifact@6.2.1
-          @'
-          import {DefaultArtifactClient} from '@actions/artifact';import fs from 'node:fs';import path from 'node:path';
-          const c=new DefaultArtifactClient(),r=path.resolve('split'),common=['ASSEMBLE-OfflineCodex.ps1','ASSEMBLE-OfflineCodex.cmd','SPLIT-MANIFEST.json'].map(x=>path.join(r,x));const parts=fs.readdirSync(r).filter(x=>x.includes('.part')).sort();if(parts.length>10)throw new Error(`Too many parts: ${parts.length}`);for(let i=0;i<parts.length;i++){const n=`OfflineCodex-Full-part${String(i+1).padStart(2,'0')}`;const z=await c.uploadArtifact(n,[path.join(r,parts[i]),...common],r,{compressionLevel:0,retentionDays:3});console.log(n,z)}
-          '@|Set-Content upload-parts.mjs -Encoding UTF8
-          try{node upload-parts.mjs *>&1|Tee-Object upload.log}catch{$_|Out-String|Tee-Object upload.log -Append;throw}
-
-      - name: Upload split diagnostics
-        if: failure()
+      - &part
+        name: Upload part 01
         uses: actions/upload-artifact@v4
         with:
-          name: OfflineCodex-split-diagnostics
+          name: OfflineCodex-Full-part01
           path: |
-            upload.log
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part001
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
             split/SPLIT-MANIFEST.json
+          compression-level: 0
           retention-days: 3
-          if-no-files-found: warn
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 02
+        with:
+          name: OfflineCodex-Full-part02
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part002
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 03
+        with:
+          name: OfflineCodex-Full-part03
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part003
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 04
+        with:
+          name: OfflineCodex-Full-part04
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part004
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 05
+        with:
+          name: OfflineCodex-Full-part05
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part005
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 06
+        with:
+          name: OfflineCodex-Full-part06
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part006
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 07
+        with:
+          name: OfflineCodex-Full-part07
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part007
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      - <<: *part
+        name: Upload part 08
+        with:
+          name: OfflineCodex-Full-part08
+          path: |
+            split/OfflineCodex-Full-v1.0.0-win-x64.zip.part008
+            split/ASSEMBLE-OfflineCodex.ps1
+            split/ASSEMBLE-OfflineCodex.cmd
+            split/SPLIT-MANIFEST.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
