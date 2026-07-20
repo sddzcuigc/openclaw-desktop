@@ -20,28 +20,19 @@ jobs:
         with:
           show-progress: false
 
-      - name: Reconstruct verified builder
+      - name: Reconstruct builder
         shell: pwsh
         run: |
-          $parts = Get-ChildItem 'offline-codex-builder-v3/parts/part-*.txt' | Sort-Object Name
-          if ($parts.Count -ne 6) { throw "Expected 6 builder parts, got $($parts.Count)" }
-          $b64 = [string]::Concat(($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }))
-          $bytes = [Convert]::FromBase64String($b64)
-          [IO.File]::WriteAllBytes('offline-codex-builder-v3/build.ps1', $bytes)
-          Write-Host "Builder bytes: $($bytes.Length)"
+          $p=Get-ChildItem 'offline-codex-builder-v3/parts/part-*.txt'|Sort-Object Name
+          if($p.Count-ne 6){throw "Expected 6 parts"}
+          $b=[string]::Concat(($p|%{(Get-Content $_.FullName -Raw).Trim()}))
+          [IO.File]::WriteAllBytes('offline-codex-builder-v3/build.ps1',[Convert]::FromBase64String($b))
 
-      - name: Build and self-test portable package
+      - name: Build and self-test
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          try {
-            & ./offline-codex-builder-v3/build.ps1 *>&1 | Tee-Object -FilePath build.log
-          } catch {
-            $_ | Out-String | Tee-Object -FilePath build.log -Append
-            Write-Host '===== BUILDER LOG TAIL ====='
-            Get-Content build.log -Tail 120
-            throw
-          }
+          $ErrorActionPreference='Stop'
+          try{& ./offline-codex-builder-v3/build.ps1 *>&1|Tee-Object build.log}catch{$_|Out-String|Tee-Object build.log -Append;Get-Content build.log -Tail 120;throw}
 
       - name: Upload failure diagnostics
         if: failure()
@@ -52,13 +43,35 @@ jobs:
             build.log
             offline-codex-builder-v3/build.ps1
           retention-days: 3
-          if-no-files-found: warn
 
-      - name: Upload complete offline package
-        uses: actions/upload-artifact@v4
-        with:
-          name: OfflineCodex-Full-v1.0.0-win-x64
-          path: out/OfflineCodex-Full-v1.0.0-win-x64
-          compression-level: 0
-          retention-days: 3
-          if-no-files-found: error
+      - name: Split verified package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop';$s='split';New-Item $s -ItemType Directory -Force|Out-Null
+          $base=Join-Path $s 'OfflineCodex-Full-v1.0.0-win-x64.zip'
+          $seven=Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          &$seven a -tzip -mx=0 -v380m $base 'out/OfflineCodex-Full-v1.0.0-win-x64/*'
+          if($LASTEXITCODE){throw "7-Zip failed: $LASTEXITCODE"}
+          $i=1;Get-ChildItem "$base.*"|Sort-Object Name|%{Rename-Item $_.FullName ("OfflineCodex-Full-v1.0.0-win-x64.zip.part{0:d3}"-f $i);$i++}
+          $info=Get-ChildItem "$s/*.part*"|Sort-Object Name|%{[ordered]@{name=$_.Name;size=$_.Length;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()}}
+          [ordered]@{archive='OfflineCodex-Full-v1.0.0-win-x64.zip';parts=@($info)}|ConvertTo-Json -Depth 5|Set-Content "$s/SPLIT-MANIFEST.json" -Encoding UTF8
+          @'
+          $ErrorActionPreference='Stop';$R=$PSScriptRoot;$m=Get-Content "$R/SPLIT-MANIFEST.json" -Raw|ConvertFrom-Json;$a=Join-Path $R $m.archive;$o=[IO.File]::Create($a)
+          try{foreach($p in $m.parts){$f=Join-Path $R $p.name;if(!(Test-Path $f)){throw "Missing $($p.name)"};if((Get-FileHash $f -Algorithm SHA256).Hash.ToLower()-ne$p.sha256){throw "Checksum failed: $($p.name)"};$x=[IO.File]::OpenRead($f);try{$x.CopyTo($o)}finally{$x.Dispose()}}}finally{$o.Dispose()}
+          Expand-Archive $a $R -Force;Write-Host '[PASS] OfflineCodex assembled and extracted.'
+          '@|Set-Content "$s/ASSEMBLE-OfflineCodex.ps1" -Encoding UTF8
+          '@echo off
+          chcp 65001>nul
+          powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ASSEMBLE-OfflineCodex.ps1"
+          pause'|Set-Content "$s/ASSEMBLE-OfflineCodex.cmd" -Encoding ASCII
+          Write-Host "Parts: $($info.Count)"
+
+      - name: Upload split parts
+        shell: pwsh
+        run: |
+          npm install --no-save --no-audit --no-fund @actions/artifact@2
+          @'
+          const {DefaultArtifactClient}=require('@actions/artifact');const fs=require('fs'),p=require('path');
+          (async()=>{const c=new DefaultArtifactClient(),r=p.resolve('split'),common=['ASSEMBLE-OfflineCodex.ps1','ASSEMBLE-OfflineCodex.cmd','SPLIT-MANIFEST.json'].map(x=>p.join(r,x));const parts=fs.readdirSync(r).filter(x=>x.includes('.part')).sort();for(let i=0;i<parts.length;i++){const n=`OfflineCodex-Full-part${String(i+1).padStart(2,'0')}`;const z=await c.uploadArtifact(n,[p.join(r,parts[i]),...common],r,{compressionLevel:0,retentionDays:3});console.log(n,z)}})().catch(e=>{console.error(e);process.exit(1)});
+          '@|Set-Content upload-parts.cjs -Encoding UTF8
+          node upload-parts.cjs
