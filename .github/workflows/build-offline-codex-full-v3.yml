@@ -34,7 +34,7 @@ jobs:
           $ErrorActionPreference='Stop'
           try{& ./offline-codex-builder-v3/build.ps1 *>&1|Tee-Object build.log}catch{$_|Out-String|Tee-Object build.log -Append;Get-Content build.log -Tail 120;throw}
 
-      - name: Upload failure diagnostics
+      - name: Upload build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -50,7 +50,7 @@ jobs:
           $ErrorActionPreference='Stop';$s='split';New-Item $s -ItemType Directory -Force|Out-Null
           $base=Join-Path $s 'OfflineCodex-Full-v1.0.0-win-x64.zip'
           $seven=Join-Path $env:ProgramFiles '7-Zip/7z.exe'
-          &$seven a -tzip -mx=0 -v380m $base 'out/OfflineCodex-Full-v1.0.0-win-x64/*'
+          &$seven a -tzip -mx=0 -v480m $base 'out/OfflineCodex-Full-v1.0.0-win-x64/*'
           if($LASTEXITCODE){throw "7-Zip failed: $LASTEXITCODE"}
           $i=1;Get-ChildItem "$base.*"|Sort-Object Name|%{Rename-Item $_.FullName ("OfflineCodex-Full-v1.0.0-win-x64.zip.part{0:d3}"-f $i);$i++}
           $info=Get-ChildItem "$s/*.part*"|Sort-Object Name|%{[ordered]@{name=$_.Name;size=$_.Length;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()}}
@@ -69,9 +69,21 @@ jobs:
       - name: Upload split parts
         shell: pwsh
         run: |
-          npm install --no-save --no-audit --no-fund @actions/artifact@2
+          $ErrorActionPreference='Stop'
+          npm install --no-save --no-audit --no-fund @actions/artifact@6.2.1
           @'
           const {DefaultArtifactClient}=require('@actions/artifact');const fs=require('fs'),p=require('path');
-          (async()=>{const c=new DefaultArtifactClient(),r=p.resolve('split'),common=['ASSEMBLE-OfflineCodex.ps1','ASSEMBLE-OfflineCodex.cmd','SPLIT-MANIFEST.json'].map(x=>p.join(r,x));const parts=fs.readdirSync(r).filter(x=>x.includes('.part')).sort();for(let i=0;i<parts.length;i++){const n=`OfflineCodex-Full-part${String(i+1).padStart(2,'0')}`;const z=await c.uploadArtifact(n,[p.join(r,parts[i]),...common],r,{compressionLevel:0,retentionDays:3});console.log(n,z)}})().catch(e=>{console.error(e);process.exit(1)});
+          (async()=>{const c=new DefaultArtifactClient(),r=p.resolve('split'),common=['ASSEMBLE-OfflineCodex.ps1','ASSEMBLE-OfflineCodex.cmd','SPLIT-MANIFEST.json'].map(x=>p.join(r,x));const parts=fs.readdirSync(r).filter(x=>x.includes('.part')).sort();if(parts.length>10)throw new Error(`Too many parts: ${parts.length}`);for(let i=0;i<parts.length;i++){const n=`OfflineCodex-Full-part${String(i+1).padStart(2,'0')}`;const z=await c.uploadArtifact(n,[p.join(r,parts[i]),...common],{compressionLevel:0,retentionDays:3});console.log(n,z)}})().catch(e=>{console.error(e);process.exit(1)});
           '@|Set-Content upload-parts.cjs -Encoding UTF8
-          node upload-parts.cjs
+          try{node upload-parts.cjs *>&1|Tee-Object upload.log}catch{$_|Out-String|Tee-Object upload.log -Append;throw}
+
+      - name: Upload split diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-split-diagnostics
+          path: |
+            upload.log
+            split/SPLIT-MANIFEST.json
+          retention-days: 3
+          if-no-files-found: warn
