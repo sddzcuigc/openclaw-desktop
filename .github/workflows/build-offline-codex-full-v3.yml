@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+        with:
+          show-progress: false
 
       - name: Reconstruct verified builder
         shell: powershell
@@ -30,7 +32,27 @@ jobs:
 
       - name: Build and self-test portable package
         shell: powershell
-        run: ./offline-codex-builder-v3/build.ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            & ./offline-codex-builder-v3/build.ps1 *>&1 | Tee-Object -FilePath build.log
+          } catch {
+            $_ | Out-String | Tee-Object -FilePath build.log -Append
+            Write-Host '===== BUILDER LOG TAIL ====='
+            Get-Content build.log -Tail 120
+            throw
+          }
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-build-diagnostics
+          path: |
+            build.log
+            offline-codex-builder-v3/build.ps1
+          retention-days: 3
+          if-no-files-found: warn
 
       - name: Upload complete offline package
         uses: actions/upload-artifact@v4
