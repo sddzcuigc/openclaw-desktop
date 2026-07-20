@@ -34,11 +34,27 @@ jobs:
           $ErrorActionPreference='Stop'
           try{& ./offline-codex-builder-v3/build.ps1 *>&1|Tee-Object build.log}catch{$_|Out-String|Tee-Object build.log -Append;Get-Content build.log -Tail 120;throw}
 
-      - name: Embed model and run final QA
+      - name: Embed model and run package QA
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           try{& ./offline-codex-builder-v3/finalize-model.ps1 *>&1|Tee-Object finalize.log}catch{$_|Out-String|Tee-Object finalize.log -Append;Get-Content finalize.log -Tail 160;throw}
+
+      - name: Real Codex and all MCP end-to-end QA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          try {
+            & ./offline-codex-builder-v3/e2e-qa.ps1 *>&1 | Tee-Object e2e.log
+            $dist=(Resolve-Path './out/OfflineCodex-Full-v1.0.0-win-x64').Path
+            $hashes=Get-ChildItem $dist -File -Recurse|Where-Object Name -ne 'SHA256SUMS.txt'|Sort-Object FullName|ForEach-Object {
+              $stream=[IO.File]::Open($_.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+              try{$sha=[Security.Cryptography.SHA256]::Create();try{$digest=$sha.ComputeHash($stream)}finally{$sha.Dispose()}}finally{$stream.Dispose()}
+              $hex=[Convert]::ToHexString($digest).ToLowerInvariant()
+              "$hex  $([IO.Path]::GetRelativePath($dist,$_.FullName).Replace('\','/'))"
+            }
+            Set-Content (Join-Path $dist 'SHA256SUMS.txt') $hashes -Encoding ASCII
+          } catch { $_|Out-String|Tee-Object e2e.log -Append; Get-Content e2e.log -Tail 200; throw }
 
       - name: Upload build diagnostics
         if: failure()
@@ -48,8 +64,11 @@ jobs:
           path: |
             build.log
             finalize.log
+            e2e.log
             offline-codex-builder-v3/build.ps1
             offline-codex-builder-v3/finalize-model.ps1
+            offline-codex-builder-v3/e2e-qa.ps1
+            out/OfflineCodex-Full-v1.0.0-win-x64/data/logs/**
           retention-days: 3
 
       - name: Split verified package
