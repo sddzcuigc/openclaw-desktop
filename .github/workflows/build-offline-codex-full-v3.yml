@@ -10,9 +10,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
+    if: ${{ !contains(github.event.pull_request.title, '[bundle-only]') }}
     runs-on: windows-latest
     timeout-minutes: 240
     steps:
@@ -143,3 +145,54 @@ jobs:
         if: ${{ hashFiles('uploads/part14/**') != '' }}
         uses: actions/upload-artifact@v4
         with: {name: OfflineCodex-Full-part14, path: uploads/part14, compression-level: 0, retention-days: 3, if-no-files-found: error}
+
+  bundle:
+    if: ${{ contains(github.event.pull_request.title, '[bundle-only]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Download verified part artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: OfflineCodex-Full-part*
+          path: downloaded
+          github-token: ${{ github.token }}
+          run-id: 29754319396
+
+      - name: Collect and verify all 13 parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p allparts
+          find downloaded -type f -name 'OfflineCodex-Full-v1.0.0-win-x64.zip.part*' -exec cp {} allparts/ \;
+          manifest=$(find downloaded -type f -name 'SPLIT-MANIFEST.json' | head -n 1)
+          assemble_ps1=$(find downloaded -type f -name 'ASSEMBLE-OfflineCodex.ps1' | head -n 1)
+          assemble_cmd=$(find downloaded -type f -name 'ASSEMBLE-OfflineCodex.cmd' | head -n 1)
+          cp "$manifest" "$assemble_ps1" "$assemble_cmd" allparts/
+          test "$(find allparts -maxdepth 1 -type f -name '*.part*' | wc -l)" -eq 13
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('allparts')
+          manifest=json.loads((root/'SPLIT-MANIFEST.json').read_text(encoding='utf-8-sig'))
+          assert len(manifest['parts'])==13, len(manifest['parts'])
+          for item in manifest['parts']:
+              p=root/item['name']
+              assert p.exists(), p
+              assert p.stat().st_size==item['size'], (p, p.stat().st_size, item['size'])
+              h=hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda:f.read(8*1024*1024), b''):
+                      h.update(chunk)
+              assert h.hexdigest()==item['sha256'], (p, h.hexdigest(), item['sha256'])
+          print('[PASS] 13 verified parts collected')
+          PY
+
+      - name: Upload one combined download
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-Final-v1.0.0-AllParts
+          path: allparts
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
