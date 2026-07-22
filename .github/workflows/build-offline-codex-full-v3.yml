@@ -1,0 +1,198 @@
+name: Build OfflineCodex Full v3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'offline-codex-builder-v3/**'
+      - '.github/workflows/build-offline-codex-full-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    if: ${{ !contains(github.event.pull_request.title, '[bundle-only]') }}
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Reconstruct builder
+        shell: pwsh
+        run: |
+          $p=Get-ChildItem 'offline-codex-builder-v3/parts/part-*.txt'|Sort-Object Name
+          if($p.Count-ne 6){throw "Expected 6 parts"}
+          $b=[string]::Concat(($p|%{(Get-Content $_.FullName -Raw).Trim()}))
+          [IO.File]::WriteAllBytes('offline-codex-builder-v3/build.ps1',[Convert]::FromBase64String($b))
+
+      - name: Build core and MCP bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          try{& ./offline-codex-builder-v3/build.ps1 *>&1|Tee-Object build.log}catch{$_|Out-String|Tee-Object build.log -Append;Get-Content build.log -Tail 120;throw}
+
+      - name: Embed model and run package QA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          try{& ./offline-codex-builder-v3/finalize-model.ps1 *>&1|Tee-Object finalize.log}catch{$_|Out-String|Tee-Object finalize.log -Append;Get-Content finalize.log -Tail 160;throw}
+
+      - name: Real Codex and all MCP end-to-end QA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          try {
+            & ./offline-codex-builder-v3/e2e-qa.ps1 *>&1 | Tee-Object e2e.log
+            $dist=(Resolve-Path './out/OfflineCodex-Full-v1.0.0-win-x64').Path
+            $hashes=Get-ChildItem $dist -File -Recurse|Where-Object Name -ne 'SHA256SUMS.txt'|Sort-Object FullName|ForEach-Object {
+              $stream=[IO.File]::Open($_.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+              try{$sha=[Security.Cryptography.SHA256]::Create();try{$digest=$sha.ComputeHash($stream)}finally{$sha.Dispose()}}finally{$stream.Dispose()}
+              $hex=[Convert]::ToHexString($digest).ToLowerInvariant()
+              "$hex  $([IO.Path]::GetRelativePath($dist,$_.FullName).Replace('\','/'))"
+            }
+            Set-Content (Join-Path $dist 'SHA256SUMS.txt') $hashes -Encoding ASCII
+          } catch { $_|Out-String|Tee-Object e2e.log -Append; Get-Content e2e.log -Tail 200; throw }
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-build-diagnostics
+          path: |
+            build.log
+            finalize.log
+            e2e.log
+            offline-codex-builder-v3/build.ps1
+            offline-codex-builder-v3/finalize-model.ps1
+            offline-codex-builder-v3/e2e-qa.ps1
+            out/OfflineCodex-Full-v1.0.0-win-x64/data/logs/**
+          retention-days: 3
+
+      - name: Split verified package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop';$s='split';New-Item $s -ItemType Directory -Force|Out-Null
+          $base=Join-Path $s 'OfflineCodex-Full-v1.0.0-win-x64.zip'
+          $seven=Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          &$seven a -tzip -mx=0 -v500m $base 'out/OfflineCodex-Full-v1.0.0-win-x64/*'
+          if($LASTEXITCODE){throw "7-Zip failed: $LASTEXITCODE"}
+          $i=1;Get-ChildItem "$base.*"|Sort-Object Name|%{Rename-Item $_.FullName ("OfflineCodex-Full-v1.0.0-win-x64.zip.part{0:d3}"-f $i);$i++}
+          $info=@(Get-ChildItem "$s/*.part*"|Sort-Object Name|%{[ordered]@{name=$_.Name;size=$_.Length;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()}})
+          if($info.Count-lt 9-or$info.Count-gt 14){throw "Unexpected split count: $($info.Count)"}
+          [ordered]@{archive='OfflineCodex-Full-v1.0.0-win-x64.zip';parts=$info}|ConvertTo-Json -Depth 5|Set-Content "$s/SPLIT-MANIFEST.json" -Encoding UTF8
+          @'
+          $ErrorActionPreference='Stop';$R=$PSScriptRoot;$m=Get-Content "$R/SPLIT-MANIFEST.json" -Raw|ConvertFrom-Json;$a=Join-Path $R $m.archive;$o=[IO.File]::Create($a)
+          try{foreach($p in $m.parts){$f=Join-Path $R $p.name;if(!(Test-Path $f)){throw "Missing $($p.name)"};if((Get-FileHash $f -Algorithm SHA256).Hash.ToLower()-ne$p.sha256){throw "Checksum failed: $($p.name)"};$x=[IO.File]::OpenRead($f);try{$x.CopyTo($o)}finally{$x.Dispose()}}}finally{$o.Dispose()}
+          Expand-Archive $a $R -Force;Write-Host '[PASS] OfflineCodex assembled and extracted.'
+          '@|Set-Content "$s/ASSEMBLE-OfflineCodex.ps1" -Encoding UTF8
+          '@echo off
+          chcp 65001>nul
+          powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ASSEMBLE-OfflineCodex.ps1"
+          pause'|Set-Content "$s/ASSEMBLE-OfflineCodex.cmd" -Encoding ASCII
+          1..$info.Count|%{$n="part{0:d2}"-f $_;$d=Join-Path 'uploads' $n;New-Item $d -ItemType Directory -Force|Out-Null;Copy-Item "$s/OfflineCodex-Full-v1.0.0-win-x64.zip.part$($_.ToString('000'))" $d;Copy-Item "$s/ASSEMBLE-OfflineCodex.ps1","$s/ASSEMBLE-OfflineCodex.cmd","$s/SPLIT-MANIFEST.json" $d}
+          Write-Host "SPLIT_COUNT=$($info.Count)"
+
+      - name: Upload part 01
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part01, path: uploads/part01, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 02
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part02, path: uploads/part02, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 03
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part03, path: uploads/part03, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 04
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part04, path: uploads/part04, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 05
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part05, path: uploads/part05, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 06
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part06, path: uploads/part06, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 07
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part07, path: uploads/part07, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 08
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part08, path: uploads/part08, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 09
+        if: ${{ hashFiles('uploads/part09/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part09, path: uploads/part09, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 10
+        if: ${{ hashFiles('uploads/part10/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part10, path: uploads/part10, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 11
+        if: ${{ hashFiles('uploads/part11/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part11, path: uploads/part11, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 12
+        if: ${{ hashFiles('uploads/part12/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part12, path: uploads/part12, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 13
+        if: ${{ hashFiles('uploads/part13/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part13, path: uploads/part13, compression-level: 0, retention-days: 3, if-no-files-found: error}
+      - name: Upload part 14
+        if: ${{ hashFiles('uploads/part14/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with: {name: OfflineCodex-Full-part14, path: uploads/part14, compression-level: 0, retention-days: 3, if-no-files-found: error}
+
+  bundle:
+    if: ${{ contains(github.event.pull_request.title, '[bundle-only]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Download verified part artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: OfflineCodex-Full-part*
+          path: downloaded
+          github-token: ${{ github.token }}
+          run-id: 29754319396
+
+      - name: Collect and verify all 13 parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p allparts
+          find downloaded -type f -name 'OfflineCodex-Full-v1.0.0-win-x64.zip.part*' -exec cp {} allparts/ \;
+          manifest=$(find downloaded -type f -name 'SPLIT-MANIFEST.json' | head -n 1)
+          assemble_ps1=$(find downloaded -type f -name 'ASSEMBLE-OfflineCodex.ps1' | head -n 1)
+          assemble_cmd=$(find downloaded -type f -name 'ASSEMBLE-OfflineCodex.cmd' | head -n 1)
+          cp "$manifest" "$assemble_ps1" "$assemble_cmd" allparts/
+          test "$(find allparts -maxdepth 1 -type f -name '*.part*' | wc -l)" -eq 13
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('allparts')
+          manifest=json.loads((root/'SPLIT-MANIFEST.json').read_text(encoding='utf-8-sig'))
+          assert len(manifest['parts'])==13, len(manifest['parts'])
+          for item in manifest['parts']:
+              p=root/item['name']
+              assert p.exists(), p
+              assert p.stat().st_size==item['size'], (p, p.stat().st_size, item['size'])
+              h=hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda:f.read(8*1024*1024), b''):
+                      h.update(chunk)
+              assert h.hexdigest()==item['sha256'], (p, h.hexdigest(), item['sha256'])
+          print('[PASS] 13 verified parts collected')
+          PY
+
+      - name: Upload one combined download
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-Final-v1.0.0-AllParts
+          path: allparts
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
