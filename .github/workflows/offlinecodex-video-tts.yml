@@ -1,0 +1,61 @@
+name: Generate OfflineCodex Edge TTS
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/offlinecodex-video-tts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Microsoft Edge TTS client
+        run: pip install edge-tts==7.2.8
+      - name: Write narration
+        shell: bash
+        run: |
+          cat > narration.txt <<'EOF'
+          大家好，这段视频不是宣传片，而是 OfflineCodex Bootstrap 0.5.0 的一次完整操作验收。先说清楚目标：它不是把几十个运行时和几 GB 模型硬塞进一个安装包，而是让你在有外网时完成一次初始化，把 Codex、Node、Ollama、浏览器运行时、MCP、Skills、模型和本地连接器下载安装到自己的目录。之后即使断网，已经安装好的环境仍然可以继续使用，并且可以整体导出到 U 盘，再迁移到完全没有外网的电脑。
+
+          现在画面里运行的是当前版本的真实 Host 界面。鼠标会按正常用户的方式逐项操作。首页首先给的是部署中心，而不是一堆技术名词。Runtime、Models、MCP、Skills 和 Connectors 分开管理，是为了让用户知道缺的到底是哪一层。比如 Node 和 Codex 是 Agent 本体的运行基础，Ollama 和本地模型负责推理，Playwright、Filesystem、Git、SQLite、Memory 等属于工具层，Skills 则负责把常见任务沉淀成可重复执行的方法。安装完成后会写入版本锁，不会因为某次自动升级把原来能工作的环境突然破坏。
+
+          接下来进入 Agent 页面。这里是整个产品最关键的闭环：用户不是为了看一个漂亮控制台，而是要真正提交任务。现在我输入一个真实的 workspace 任务，要求系统检查 demo 项目、确认文件可以读取，并把最终结果保存进任务记录。鼠标点击提交以后，任务进入持久化队列。即使 Host 意外重启，历史任务和结果仍然可以保留。为了让这次视频每次都能得到同样结果，这一段模型输出使用了确定性的测试钩子，所以它证明的是 Agent 提交、队列、结果回传和持久化链路，而不是拿模拟文字冒充 7B 模型的推理能力。真实 Codex 到本地 Ollama 模型的调用，在前面的 Windows 端到端验收里已经单独通过。
+
+          然后看工作区文件中转。手机、平板或者另一台电脑经常需要把截图、日志、文档或者代码片段送给 Host。这里我选择一个本地文本文件，点击上传。这个操作实际调用 Host 的 workspace 上传接口，文件会真的写进工作目录，随后刷新列表就能看到。路径会经过目录越界和符号链接检查，单个上传也有限制。这样移动端获得的是完成任务需要的文件通道，而不是直接拿到整台电脑的任意文件权限。任务结束以后，生成的报告、代码或者压缩包也可以从同一页面下载回来。
+
+          再看资源连接。OfflineCodex 不应该把所有知识都复制进自己的数据库，所以默认支持把现有本地资源直接接进来。现在先连接一个 Obsidian Vault，然后再连接一个普通项目目录。Obsidian 连接器不是简单显示文件名，它以 MCP 的方式向 Codex 暴露搜索笔记、读取笔记、写入笔记、查看反向链接、标签和最近修改等工具；只读模式下会直接隐藏写入能力。普通目录连接器也使用相同的安全边界。以后你可以继续接 Git 仓库、数据库、Jupyter、本地服务，以及任何已经下载安装到电脑上的标准 MCP。
+
+          扩展中心解决的是长期迭代问题。主程序不应该为了增加一个 Skill 就重新发布一整个版本。这里可以直接安装 SKILL.md，也可以导入扩展清单。一个清单可以描述 Skill、stdio MCP 或实验性的 Streamable HTTP MCP。下载成功以后，由本地锁文件记录版本。这样真正需要长期维护的是一个小的 Bootstrap 和本地缓存，而不是一个越来越大的单体程序。远程 HTTP MCP 目前会明确标成实验功能，因为上游 Codex 版本仍可能出现工具发现回归，不能为了功能列表好看就把不稳定能力说成稳定。
+
+          设备页面展示 Host 加 Client 的多端模式。Windows、macOS 和 Linux 负责运行 Codex、模型和 MCP；Web、iOS 和 Android 作为控制端。第一次从局域网设备访问时，需要输入 Host 本机显示的六位配对码。配对成功后使用持久化 HttpOnly Cookie，所以重启以后不需要每天重新输入。连续输错多次会触发临时锁定。更重要的是，远程设备只能提交安全 Agent、查看任务，以及在 workspace 范围内上传下载文件。安装 Runtime、替换模型、修改 MCP、导入离线包和完全访问模式仍然只能在 Host 本机执行。
+
+          现在进入离线迁移页面。这个功能才是 OfflineCodex 和普通本地 Agent 最大的差别之一。外网机器第一次把需要的 runtime、模型、MCP 和 Skills 下载好之后，可以生成完整离线缓存包。缓存包会包含已经验证过的运行时、模型文件、插件、连接器、配置以及版本锁。拿到内网电脑以后直接导入，再重建本地配置，而不是让用户重新研究 Node、Python、Chromium、模型路径或者 npm、pip 的安装问题。真正的目标是把一次成功部署变成可以重复复制的环境。
+
+          最后看诊断页面。这里不只是显示接口是否返回二百，而是检查平台、组件数量、连接器、任务记录、版本锁、Codex 配置、网络状态和远程访问状态。当前这一版已经对 Folder MCP 和 Obsidian MCP 做过真实的 initialize、tools list 和 tools call 协议测试，Folder MCP 还实际写入过文件；工作区上传、任务持久化、设备配对限流、归档路径穿越等反例也加入了自动测试。
+
+          这一版仍然有明确边界。当前视频环境没有重新下载数 GB 的完整 Runtime 和模型，所以视频不会假装演示一次完整大文件安装；Agent 页面也明确说明使用确定性测试钩子验证任务链。真正下一步应该继续做的，不是再加十几个按钮，而是在真实 Windows 和 macOS 机器上从空目录开始，完成首次联网部署、拔网、重启、真实模型执行、Playwright 浏览器操作、文件中转、Obsidian 调用和离线迁移，再把这些过程作为固定回归测试。只有这条端到端链长期稳定，OfflineCodex 才能真正从一个工具集合变成普通人可以反复使用的产品。
+
+          以上就是 OfflineCodex Bootstrap 0.5.0 的完整操作演示。核心思路可以概括成一句话：第一次联网把复杂环境装对并锁住，之后让 Codex、模型、MCP、Skills 和你自己的本地知识长期在本机工作，同时让手机和其他设备以受控方式调用这套能力。
+          EOF
+      - name: Generate Edge TTS audio and subtitles
+        run: |
+          edge-tts --voice zh-CN-YunxiNeural --rate=-5% --file narration.txt --write-media OfflineCodex-v0.5.0-EdgeTTS.mp3 --write-subtitles OfflineCodex-v0.5.0-EdgeTTS.srt
+      - name: Upload narration artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-v0.5.0-EdgeTTS
+          path: |
+            narration.txt
+            OfflineCodex-v0.5.0-EdgeTTS.mp3
+            OfflineCodex-v0.5.0-EdgeTTS.srt
+          retention-days: 3
