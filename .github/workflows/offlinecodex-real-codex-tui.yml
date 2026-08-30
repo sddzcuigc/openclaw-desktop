@@ -98,14 +98,21 @@ jobs:
           exec "$ROOT/codex/node_modules/.bin/codex" --oss --local-provider ollama -m qwen2.5-coder:7b --dangerously-bypass-approvals-and-sandbox
           EOF
           chmod +x "$ROOT/run-codex.sh"
-          xterm -T 'Official OpenAI Codex 0.144.6 - Offline Local' -geometry 175x48+10+10 -fa 'DejaVu Sans Mono' -fs 13 -bg '#090d13' -fg '#eef3fa' -e "$ROOT/run-codex.sh" >"$ROOT/out/xterm.log" 2>&1 &
+          xterm -class OfflineCodexProof -name OfflineCodexProof -T 'Official OpenAI Codex 0.144.6 - Offline Local' -geometry 175x48+10+10 -fa 'DejaVu Sans Mono' -fs 13 -bg '#090d13' -fg '#eef3fa' -e "$ROOT/run-codex.sh" >"$ROOT/out/xterm.log" 2>&1 &
           XTERM_PID=$!
-          for i in $(seq 1 60); do WID=$(xdotool search --name 'Official OpenAI Codex' 2>/dev/null | head -1 || true); [ -n "$WID" ] && break; sleep 1; done
+          WID=''
+          for i in $(seq 1 60); do
+            WID=$(xdotool search --class OfflineCodexProof 2>/dev/null | head -1 || true)
+            if [ -z "$WID" ]; then WID=$(xdotool search --classname OfflineCodexProof 2>/dev/null | head -1 || true); fi
+            [ -n "$WID" ] && break
+            sleep 1
+          done
+          xwininfo -root -tree > "$ROOT/out/xwininfo-tree.txt" || true
           test -n "${WID:-}"
-          xdotool windowactivate "$WID"
-          xdotool windowsize "$WID" 1880 1020
-          xdotool windowmove "$WID" 20 20
-          xdotool mousemove 960 540 click 1
+          xdotool windowfocus --sync "$WID" || true
+          xdotool windowsize "$WID" 1880 1020 || true
+          xdotool windowmove "$WID" 20 20 || true
+          xdotool mousemove 960 540 click 1 || true
           ffmpeg -y -f x11grab -framerate 15 -video_size 1920x1080 -i :99.0 -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p "$ROOT/out/official-codex-tui-raw.mp4" >"$ROOT/out/ffmpeg.log" 2>&1 &
           FFMPEG_PID=$!
           sleep 12
@@ -122,7 +129,7 @@ jobs:
           import -window root "$ROOT/out/04-plugins.png"
           xdotool key --window "$WID" Escape; sleep 3
           xdotool type --window "$WID" --delay 25 'Reply exactly TUI_LOCAL_MODEL_OK. This is a local Ollama model proof.'; xdotool key --window "$WID" Return
-          sleep 120
+          sleep 220
           import -window root "$ROOT/out/05-local-model-result.png"
           xdotool key --window "$WID" Escape || true
           sleep 3
@@ -176,9 +183,19 @@ jobs:
           sha256sum "$ROOT/out/OfflineCodex-v0.6.0-Official-Codex-TUI-EdgeTTS.mp4" > "$ROOT/out/video.sha256"
 
       - name: Upload proof artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: OfflineCodex-v0.6.0-Real-Codex-Proof
+          path: ${{ runner.temp }}/offlinecodex-proof/out/
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-v0.6.0-TUI-failure-diagnostics
           path: ${{ runner.temp }}/offlinecodex-proof/out/
           compression-level: 0
           retention-days: 3
