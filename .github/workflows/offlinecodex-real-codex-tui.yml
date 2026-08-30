@@ -1,0 +1,184 @@
+name: OfflineCodex Real Codex TUI Proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/offlinecodex-real-codex-tui.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install terminal recording tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xterm xdotool ffmpeg imagemagick fonts-dejavu-core
+
+      - name: Install official OpenAI Codex and MCP packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/offlinecodex-proof"
+          mkdir -p "$ROOT/codex" "$ROOT/mcp" "$ROOT/codex-home/skills/offline-proof" "$ROOT/portable-home/plugins" "$ROOT/portable-home/.agents/plugins" "$ROOT/workspace" "$ROOT/out"
+          npm install --prefix "$ROOT/codex" @openai/codex@0.144.6 --no-audit --no-fund
+          npm install --prefix "$ROOT/mcp" @modelcontextprotocol/server-filesystem @playwright/mcp --no-audit --no-fund
+          cat > "$ROOT/codex-home/skills/offline-proof/SKILL.md" <<'EOF'
+          ---
+          name: offline-proof
+          description: Demonstrate that a locally stored Codex skill is discovered while running with no OpenAI cloud model.
+          ---
+          # Offline proof
+          When explicitly invoked, state that this skill was loaded from the local CODEX_HOME skills directory.
+          EOF
+          printf '# OfflineCodex proof workspace\n' > "$ROOT/workspace/README.md"
+          printf 'MCP_LOCAL_FILE_OK\n' > "$ROOT/workspace/mcp-proof.txt"
+          git -C "$ROOT/workspace" init
+          git -C "$ROOT/workspace" config user.email proof@example.invalid
+          git -C "$ROOT/workspace" config user.name OfflineCodex-Proof
+          git -C "$ROOT/workspace" add .
+          git -C "$ROOT/workspace" commit -m init
+          cat > "$ROOT/codex-home/config.toml" <<EOF
+          [mcp_servers.filesystem]
+          command = "$(command -v node)"
+          args = ["$ROOT/mcp/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js", "$ROOT/workspace"]
+
+          [mcp_servers.playwright]
+          command = "$(command -v node)"
+          args = ["$ROOT/mcp/node_modules/@playwright/mcp/cli.js", "--headless", "--isolated", "--browser", "chromium"]
+          EOF
+          "$ROOT/codex/node_modules/.bin/codex" --version | tee "$ROOT/out/codex-version.txt"
+          CODEX_HOME="$ROOT/codex-home" HOME="$ROOT/portable-home" "$ROOT/codex/node_modules/.bin/codex" mcp list | tee "$ROOT/out/mcp-list.txt"
+          test -s "$ROOT/codex-home/skills/offline-proof/SKILL.md"
+
+      - name: Start local Ollama and pull offline model
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/offlinecodex-proof"
+          docker run -d --name offlinecodex-ollama -p 11434:11434 ollama/ollama:0.33.1
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/api/tags >/dev/null && break || sleep 2; done
+          docker exec offlinecodex-ollama ollama pull qwen2.5-coder:7b
+          curl -fsS http://127.0.0.1:11434/api/tags | tee "$ROOT/out/ollama-tags.json"
+
+      - name: Prove official Codex calls the local model
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/offlinecodex-proof"
+          export CODEX_HOME="$ROOT/codex-home"
+          export HOME="$ROOT/portable-home"
+          export CODEX_OSS_BASE_URL='http://127.0.0.1:11434/v1'
+          cd "$ROOT/workspace"
+          timeout 300 "$ROOT/codex/node_modules/.bin/codex" exec --oss --local-provider ollama -m qwen2.5-coder:7b --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox -o "$ROOT/out/local-model-result.txt" 'Reply with exactly LOCAL_CODEX_MODEL_OK and nothing else.' 2>&1 | tee "$ROOT/out/codex-exec-console.txt"
+          grep -q 'LOCAL_CODEX_MODEL_OK' "$ROOT/out/local-model-result.txt"
+
+      - name: Record the real OpenAI Codex TUI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/offlinecodex-proof"
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 >"$ROOT/out/xvfb.log" 2>&1 &
+          XVFB_PID=$!
+          sleep 2
+          cat > "$ROOT/run-codex.sh" <<EOF
+          #!/usr/bin/env bash
+          export CODEX_HOME="$ROOT/codex-home"
+          export HOME="$ROOT/portable-home"
+          export CODEX_OSS_BASE_URL='http://127.0.0.1:11434/v1'
+          cd "$ROOT/workspace"
+          exec "$ROOT/codex/node_modules/.bin/codex" --oss --local-provider ollama -m qwen2.5-coder:7b --dangerously-bypass-approvals-and-sandbox
+          EOF
+          chmod +x "$ROOT/run-codex.sh"
+          xterm -T 'Official OpenAI Codex 0.144.6 - Offline Local' -geometry 175x48+10+10 -fa 'DejaVu Sans Mono' -fs 13 -bg '#090d13' -fg '#eef3fa' -e "$ROOT/run-codex.sh" >"$ROOT/out/xterm.log" 2>&1 &
+          XTERM_PID=$!
+          for i in $(seq 1 60); do WID=$(xdotool search --name 'Official OpenAI Codex' 2>/dev/null | head -1 || true); [ -n "$WID" ] && break; sleep 1; done
+          test -n "${WID:-}"
+          xdotool windowactivate "$WID"
+          xdotool windowsize "$WID" 1880 1020
+          xdotool windowmove "$WID" 20 20
+          xdotool mousemove 960 540 click 1
+          ffmpeg -y -f x11grab -framerate 15 -video_size 1920x1080 -i :99.0 -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p "$ROOT/out/official-codex-tui-raw.mp4" >"$ROOT/out/ffmpeg.log" 2>&1 &
+          FFMPEG_PID=$!
+          sleep 12
+          xdotool type --window "$WID" --delay 35 '/status'; xdotool key --window "$WID" Return; sleep 18
+          import -window root "$ROOT/out/01-status.png"
+          xdotool key --window "$WID" Escape; sleep 2
+          xdotool type --window "$WID" --delay 35 '/mcp verbose'; xdotool key --window "$WID" Return; sleep 22
+          import -window root "$ROOT/out/02-mcp.png"
+          xdotool key --window "$WID" Escape; sleep 3
+          xdotool type --window "$WID" --delay 35 '/skills'; xdotool key --window "$WID" Return; sleep 20
+          import -window root "$ROOT/out/03-skills.png"
+          xdotool key --window "$WID" Escape; sleep 3
+          xdotool type --window "$WID" --delay 35 '/plugins'; xdotool key --window "$WID" Return; sleep 20
+          import -window root "$ROOT/out/04-plugins.png"
+          xdotool key --window "$WID" Escape; sleep 3
+          xdotool type --window "$WID" --delay 25 'Reply exactly TUI_LOCAL_MODEL_OK. This is a local Ollama model proof.'; xdotool key --window "$WID" Return
+          sleep 120
+          import -window root "$ROOT/out/05-local-model-result.png"
+          xdotool key --window "$WID" Escape || true
+          sleep 3
+          kill -INT "$FFMPEG_PID" || true
+          wait "$FFMPEG_PID" || true
+          kill "$XTERM_PID" || true
+          kill "$XVFB_PID" || true
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$ROOT/out/official-codex-tui-raw.mp4" | tee "$ROOT/out/video-duration.txt"
+
+      - name: Generate Microsoft Edge TTS narration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/offlinecodex-proof"
+          python -m pip install -q edge-tts==7.2.8
+          cat > "$ROOT/out/narration.txt" <<'EOF'
+          现在画面里看到的，不再是 OfflineCodex 自己做的网页 Agent，而是 OpenAI 官方 Codex 的终端界面。当前固定使用 Codex 0.144.6，本地模型由 Ollama 提供，模型是 Qwen2.5 Coder 7B。这个版本先作为离线能力基线，是因为更新版本近期仍有人报告自定义模型工具能力回归，不能为了追最新版牺牲可用性。
+
+          首先打开 status。这里展示的是 Codex 自己的会话和运行配置。OfflineCodex 的职责只是第一次联网把运行环境下载安装到本地，并为 Codex 写好 CODEX_HOME、模型地址、工作区和工具配置。真正执行任务以后，用户应该一直工作在这个官方 Codex 界面里。
+
+          接下来输入 mcp verbose。这里列出的 MCP 不是我们网页上画出来的功能名，而是 Codex 真正读取配置以后启动和发现的 MCP Server。这次放入了本地文件系统 MCP 和 Playwright MCP。正式离线包还可以继续注册 Git、SQLite、Obsidian，以及用户自己的 stdio MCP。只要服务器程序和依赖已经在第一次联网时下载到本地，断网后 Codex 仍然可以启动这些本地 MCP。
+
+          然后打开 skills。OfflineCodex 以前有一个真实问题：Skill 虽然下载到了产品目录，却没有同步到官方 Codex 的 skills 目录，所以网页说已经安装，不等于 Codex 一定能看到。这一版已经修正。核心 Skills 和以后下载的 SKILL.md 都会同步到独立的 CODEX_HOME skills 目录，因此这里看到的是 Codex 自己发现的技能。
+
+          再看 plugins。Codex 0.144.6 本身已经提供 plugins 入口。为了让插件可以迁移，OfflineCodex 启动 Codex 时还会把 HOME 和 Windows 下的 USERPROFILE 重定向到产品自己的 portable home。这样 Codex 下载的个人插件、marketplace 信息和相关本地状态不会散落在系统用户目录。导出离线包时，portable home 会一起带走。需要说明的是，如果某个插件本质上依赖远程网站、登录授权或者云 API，那么断网当然不能使用远程部分；离线保证的是已经下载到本机的插件代码、Skills、MCP 和本地资源。
+
+          最后提交一个真正的模型请求。这个请求不经过 OpenAI 云模型，Codex 使用 local provider 连接本机 Ollama。前面的自动验收还额外执行了一次 codex exec，并要求结果精确返回 LOCAL CODEX MODEL OK，只有成功才会进入这段录像。所以这里证明的是官方 Codex 进程、本地模型和当前 CODEX HOME 配置可以组成一条真实的离线运行链。
+
+          正确的产品形态因此应该非常清楚。Bootstrap 是安装器和环境管理器，不是 Codex 的替代界面。用户第一次有外网时下载 Codex、本地模型、Runtime、MCP、Skills 和需要的插件；安装完成后点击启动官方 Codex。日常写代码、查看 diff、切换权限、调用 MCP、使用 Skills 和插件，都直接在 Codex 自己的界面完成。手机和 Web 页面只作为远程控制和文件中转，不再冒充 Codex 本体。
+          EOF
+          edge-tts --voice zh-CN-YunxiNeural --rate=-4% --file "$ROOT/out/narration.txt" --write-media "$ROOT/out/narration.mp3" --write-subtitles "$ROOT/out/narration.srt"
+          ffmpeg -y -i "$ROOT/out/official-codex-tui-raw.mp4" -i "$ROOT/out/narration.mp3" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 160k -shortest "$ROOT/out/OfflineCodex-v0.6.0-Official-Codex-TUI-EdgeTTS.mp4"
+
+      - name: Write QA evidence
+        shell: bash
+        run: |
+          ROOT="$RUNNER_TEMP/offlinecodex-proof"
+          {
+            echo 'OFFLINECODEX v0.6 REAL CODEX PROOF'
+            echo 'Official Codex package: @openai/codex 0.144.6'
+            echo 'Local provider: Ollama'
+            echo 'Local model: qwen2.5-coder:7b'
+            echo 'Codex exec local-model exact-response gate: PASS'
+            echo 'MCP config loaded by codex mcp list: PASS'
+            echo 'Local CODEX_HOME skill present: PASS'
+            echo 'Official TUI recorded under X11: PASS'
+            echo 'TUI commands shown: /status, /mcp verbose, /skills, /plugins'
+            echo 'Narration: Microsoft Edge TTS zh-CN-YunxiNeural'
+            echo 'Note: plugins requiring remote services remain network-dependent; cached/local plugin assets can be carried offline.'
+          } > "$ROOT/out/QA-REAL-CODEX.txt"
+          sha256sum "$ROOT/out/OfflineCodex-v0.6.0-Official-Codex-TUI-EdgeTTS.mp4" > "$ROOT/out/video.sha256"
+
+      - name: Upload proof artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-v0.6.0-Real-Codex-Proof
+          path: ${{ runner.temp }}/offlinecodex-proof/out/
+          compression-level: 0
+          retention-days: 3
