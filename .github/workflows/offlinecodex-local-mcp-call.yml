@@ -1,0 +1,115 @@
+name: OfflineCodex Local MCP Call Proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/offlinecodex-local-mcp-call.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official Codex and filesystem MCP
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/codex-mcp-proof"
+          mkdir -p "$ROOT/codex" "$ROOT/mcp" "$ROOT/codex-home" "$ROOT/home" "$ROOT/workspace" "$ROOT/out"
+          npm install --prefix "$ROOT/codex" @openai/codex@0.144.6 --no-audit --no-fund
+          npm install --prefix "$ROOT/mcp" @modelcontextprotocol/server-filesystem --no-audit --no-fund
+          printf 'MCP_LOCAL_FILE_OK\n' > "$ROOT/workspace/mcp-proof.txt"
+          git -C "$ROOT/workspace" init
+          git -C "$ROOT/workspace" config user.email proof@example.invalid
+          git -C "$ROOT/workspace" config user.name OfflineCodex-Proof
+          git -C "$ROOT/workspace" add . && git -C "$ROOT/workspace" commit -m init
+          cat > "$ROOT/codex-home/config.toml" <<EOF
+          [mcp_servers.filesystem]
+          command = "$(command -v node)"
+          args = ["$ROOT/mcp/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js", "$ROOT/workspace"]
+          EOF
+          CODEX_HOME="$ROOT/codex-home" HOME="$ROOT/home" "$ROOT/codex/node_modules/.bin/codex" mcp list | tee "$ROOT/out/mcp-list.txt"
+
+      - name: Start Ollama and pull Qwen coder 7B
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/codex-mcp-proof"
+          docker run -d --name codex-mcp-ollama -p 11434:11434 ollama/ollama:0.33.1
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/api/tags >/dev/null && break || sleep 2; done
+          docker exec codex-mcp-ollama ollama pull qwen2.5-coder:7b
+          curl -fsS http://127.0.0.1:11434/api/tags > "$ROOT/out/ollama-tags.json"
+
+      - name: Require an actual MCP tool call from official Codex
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT="$RUNNER_TEMP/codex-mcp-proof"
+          export CODEX_HOME="$ROOT/codex-home"
+          export HOME="$ROOT/home"
+          export CODEX_OSS_BASE_URL='http://127.0.0.1:11434/v1'
+          cd "$ROOT/workspace"
+          PROMPT="You MUST use the configured filesystem MCP server to read the absolute file $ROOT/workspace/mcp-proof.txt. Do not use shell commands, cat, Python, Node, Git, or any direct filesystem method. After the MCP tool returns MCP_LOCAL_FILE_OK, reply with exactly CODEX_MCP_TOOL_OK and nothing else."
+          set +e
+          timeout 360 "$ROOT/codex/node_modules/.bin/codex" exec --json --oss --local-provider ollama -m qwen2.5-coder:7b --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox "$PROMPT" > "$ROOT/out/mcp-exec.jsonl" 2> "$ROOT/out/mcp-exec.stderr"
+          STATUS=$?
+          set -e
+          cat "$ROOT/out/mcp-exec.jsonl"
+          cat "$ROOT/out/mcp-exec.stderr" >&2 || true
+          test "$STATUS" -eq 0
+          python - <<'PY'
+          import json, os, pathlib, sys
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'codex-mcp-proof'
+          events=[]
+          for line in (root/'out/mcp-exec.jsonl').read_text(errors='replace').splitlines():
+              try: events.append(json.loads(line))
+              except Exception: pass
+          calls=[]
+          for e in events:
+              item=e.get('item') or {}
+              if item.get('type')=='mcp_tool_call':
+                  calls.append(item)
+          (root/'out/mcp-calls.json').write_text(json.dumps(calls,ensure_ascii=False,indent=2))
+          if not calls:
+              print('FAIL: no mcp_tool_call event', file=sys.stderr); sys.exit(2)
+          fs=[c for c in calls if c.get('server')=='filesystem']
+          if not fs:
+              print('FAIL: MCP calls occurred but not to filesystem', file=sys.stderr); sys.exit(3)
+          completed=[c for c in fs if c.get('status') in ('completed','success')]
+          if not completed:
+              print('FAIL: filesystem MCP call not completed', file=sys.stderr); sys.exit(4)
+          text='\n'.join(json.dumps(e,ensure_ascii=False) for e in events)
+          if 'CODEX_MCP_TOOL_OK' not in text:
+              print('FAIL: final exact response missing', file=sys.stderr); sys.exit(5)
+          print('PASS: official Codex emitted a completed filesystem mcp_tool_call and final response.')
+          PY
+
+      - name: Write evidence
+        if: success()
+        shell: bash
+        run: |
+          ROOT="$RUNNER_TEMP/codex-mcp-proof"
+          cat > "$ROOT/out/QA-MCP-CALL.txt" <<'EOF'
+          OFFLINECODEX REAL MCP CALL: PASS
+          Official Codex: @openai/codex 0.144.6
+          Local provider: Ollama
+          Model: qwen2.5-coder:7b
+          MCP: @modelcontextprotocol/server-filesystem
+          Gate: codex exec --json emitted completed mcp_tool_call for server=filesystem
+          Gate: final agent response contained CODEX_MCP_TOOL_OK
+          EOF
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineCodex-v0.6.0-Local-MCP-Call-Proof
+          path: ${{ runner.temp }}/codex-mcp-proof/out/
+          compression-level: 0
+          retention-days: 3
